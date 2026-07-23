@@ -1,0 +1,34 @@
+# 策略参数配置 - A股智能选股
+
+# 多因子策略（推荐）
+multi_factor:
+  name: "A股多因子策略"
+  description: "综合估值40% + 盈利30% + 规模30% 筛选"
+  weights:
+    valuation: 0.40
+    profitability: 0.30
+    scale: 0.30
+  filters:
+    min_score: 60
+    min_market_cap: 50  # 亿元
+    max_pe: 100
+
+# 低PE价值策略
+pe_value:
+  name: "低PE价值策略"
+  description: "PE<20 + ROE>15% + 营收增长>5%"
+  parameters:
+    pe_threshold: 20
+    roe_threshold: 15
+    revenue_growth_min: 5
+    min_market_cap: 10
+
+# 三维评分策略（基本面+技术面+情绪面）
+three_dimensional:
+  name: "三维评分策略"
+  description: "基本面40% + 技术面35% + 情绪面25%"
+  weights:
+    fundamental: 0.40
+    technical: 0.35
+    sentiment: 0.25
+  strategy_mode: "moderate"  # strict/moderate/loose
