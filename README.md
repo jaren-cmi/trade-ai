@@ -73,6 +73,20 @@ docker compose down --volumes
 
 ---
 
+## ⚙️ 可选配置
+
+项目提供 `.env.example` 作为环境变量参考：
+
+```powershell
+# 复制示例文件（Windows）
+copy .env.example .env
+
+# 可选：填入 Tavily API Key（用于三维评分策略情绪分析面）
+# 留空则情绪分析维度使用中性分，不影响核心选股
+```
+
+---
+
 ## 📁 项目结构
 
 ```

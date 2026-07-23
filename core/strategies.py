@@ -73,7 +73,9 @@ class MultiFactorStrategy(BaseStrategy):
         growth_col = '营收增长率'
 
         # 估值因子（PE倒数，越小越好）
-        df['pe_score'] = 1.0 / df[pe_col].clip(lower=0.1) if pe_col in df.columns else 0
+        df['pe_score'] = (1.0 / df[pe_col].clip(lower=0.1)
+                          if pe_col in df.columns
+                          else pd.Series(0.0, index=df.index))
 
         # 盈利因子
         df['roe_score'] = pd.to_numeric(df.get(roe_col, 0), errors='coerce').fillna(0)

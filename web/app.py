@@ -9,6 +9,7 @@ import sys
 import os
 import threading
 import time
+import queue
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -73,6 +74,7 @@ def _init_state():
         "progress_messages": [],
         "thread": None,
         "run_id": 0,
+        "msg_queue": None,  # thread-safe queue for progress messages
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -89,17 +91,15 @@ def _run_engine_in_background(
     sample_size: Optional[int],
     use_cache: bool,
     run_id: int,
+    msg_queue: "queue.Queue[str]",
+    result_container: dict,
 ):
-    """在后台线程中运行选股引擎，结果写入 session_state"""
+    """在后台线程中运行选股引擎，通过线程安全队列传递进度消息"""
     try:
         from core.engine import StockPickerEngine
 
-        messages = []
-
         def _progress(msg: str):
-            messages.append(msg)
-            # 直接同步写回 session_state（线程安全：仅追加列表元素）
-            st.session_state.progress_messages = list(messages)
+            msg_queue.put(("progress", msg))
 
         engine = StockPickerEngine(
             config_path=str(_ROOT / "config"),
@@ -115,18 +115,13 @@ def _run_engine_in_background(
             top_n=50,
             progress_callback=_progress,
         )
-
-        # 仅当 run_id 未变（未点击新的"取消"）时才写结果
-        if st.session_state.run_id == run_id:
-            st.session_state.result = result
-            st.session_state.error = None
-            st.session_state.running = False
+        result_container["result"] = result
+        msg_queue.put(("done", None))
 
     except Exception as exc:
         logger.exception("引擎运行异常")
-        if st.session_state.run_id == run_id:
-            st.session_state.error = str(exc)
-            st.session_state.running = False
+        result_container["error"] = str(exc)
+        msg_queue.put(("error", str(exc)))
 
 
 # ============ 主页面 ============
@@ -180,6 +175,7 @@ def main():
                 st.session_state.running = False
                 st.session_state.run_id += 1  # 使后台线程结果失效
                 st.session_state.progress_messages = []
+                st.session_state.msg_queue = None
                 st.rerun()
 
     # -------- 启动后台任务 --------
@@ -191,11 +187,18 @@ def main():
         st.session_state.run_id += 1
         run_id = st.session_state.run_id
 
+        # 使用线程安全队列传递消息
+        msg_q: queue.Queue = queue.Queue()
+        result_container: dict = {}
+        st.session_state.msg_queue = msg_q
+
         t = threading.Thread(
             target=_run_engine_in_background,
-            args=(pool, strategy_name, sample_size, use_cache, run_id),
+            args=(pool, strategy_name, sample_size, use_cache, run_id,
+                  msg_q, result_container),
             daemon=True,
         )
+        t._result_container = result_container  # attach for later retrieval
         t.start()
         st.session_state.thread = t
         st.rerun()
@@ -205,24 +208,54 @@ def main():
         with col_status:
             st.write("")
         progress_placeholder = st.empty()
-        spinner_placeholder = st.empty()
 
-        with spinner_placeholder:
-            with st.spinner("正在运行选股引擎，请稍候..."):
-                # 轮询后台线程状态
-                while st.session_state.running:
-                    msgs = st.session_state.progress_messages
-                    if msgs:
-                        with progress_placeholder.container():
-                            st.caption("**运行日志：**")
-                            for m in msgs[-10:]:  # 只显示最新10条
-                                st.caption(f"  › {m}")
-                    time.sleep(1)
-                    # 检查线程是否已结束
-                    thread = st.session_state.get("thread")
-                    if thread is not None and not thread.is_alive():
-                        st.session_state.running = False
-                        break
+        with st.spinner("正在运行选股引擎，请稍候..."):
+            # 轮询后台线程状态，从线程安全队列读取消息
+            msg_q = st.session_state.get("msg_queue")
+            thread = st.session_state.get("thread")
+
+            while st.session_state.running:
+                # 排空队列中的消息
+                if msg_q is not None:
+                    while True:
+                        try:
+                            tag, payload = msg_q.get_nowait()
+                            if tag == "progress":
+                                st.session_state.progress_messages.append(payload)
+                            elif tag in ("done", "error"):
+                                # 线程完成
+                                container = getattr(thread, "_result_container", {})
+                                if tag == "done":
+                                    st.session_state.result = container.get("result")
+                                else:
+                                    st.session_state.error = container.get("error", payload)
+                                st.session_state.running = False
+                                break
+                        except queue.Empty:
+                            break
+
+                # 刷新进度显示
+                msgs = st.session_state.progress_messages
+                if msgs:
+                    with progress_placeholder.container():
+                        st.caption("**运行日志：**")
+                        for m in msgs[-10:]:
+                            st.caption(f"  › {m}")
+
+                if not st.session_state.running:
+                    break
+
+                time.sleep(1)
+
+                # 兜底检查：线程已结束但未收到完成消息
+                if thread is not None and not thread.is_alive():
+                    container = getattr(thread, "_result_container", {})
+                    if "result" in container:
+                        st.session_state.result = container["result"]
+                    elif "error" in container:
+                        st.session_state.error = container["error"]
+                    st.session_state.running = False
+                    break
 
         st.rerun()
 
