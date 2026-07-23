@@ -74,7 +74,8 @@ def _init_state():
         "progress_messages": [],
         "thread": None,
         "run_id": 0,
-        "msg_queue": None,  # thread-safe queue for progress messages
+        "msg_queue": None,        # thread-safe queue for progress messages
+        "result_container": {},   # shared dict for engine result/error
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -91,10 +92,16 @@ def _run_engine_in_background(
     sample_size: Optional[int],
     use_cache: bool,
     run_id: int,
-    msg_queue: "queue.Queue[str]",
+    msg_queue: "queue.Queue[tuple]",
     result_container: dict,
 ):
-    """在后台线程中运行选股引擎，通过线程安全队列传递进度消息"""
+    """在后台线程中运行选股引擎，通过线程安全队列传递进度消息
+    
+    队列消息格式为 (tag, payload)：
+      ("progress", message_str) — 进度文字
+      ("done", None)            — 完成
+      ("error", error_str)      — 错误
+    """
     try:
         from core.engine import StockPickerEngine
 
@@ -187,10 +194,11 @@ def main():
         st.session_state.run_id += 1
         run_id = st.session_state.run_id
 
-        # 使用线程安全队列传递消息
+        # 使用线程安全队列传递消息，result_container 存入 session_state 避免修改 Thread 对象
         msg_q: queue.Queue = queue.Queue()
         result_container: dict = {}
         st.session_state.msg_queue = msg_q
+        st.session_state.result_container = result_container
 
         t = threading.Thread(
             target=_run_engine_in_background,
@@ -198,7 +206,6 @@ def main():
                   msg_q, result_container),
             daemon=True,
         )
-        t._result_container = result_container  # attach for later retrieval
         t.start()
         st.session_state.thread = t
         st.rerun()
@@ -213,6 +220,7 @@ def main():
             # 轮询后台线程状态，从线程安全队列读取消息
             msg_q = st.session_state.get("msg_queue")
             thread = st.session_state.get("thread")
+            container = st.session_state.get("result_container", {})
 
             while st.session_state.running:
                 # 排空队列中的消息
@@ -223,8 +231,7 @@ def main():
                             if tag == "progress":
                                 st.session_state.progress_messages.append(payload)
                             elif tag in ("done", "error"):
-                                # 线程完成
-                                container = getattr(thread, "_result_container", {})
+                                # 线程完成，从 session_state 中的 container 读取结果
                                 if tag == "done":
                                     st.session_state.result = container.get("result")
                                 else:
@@ -249,7 +256,6 @@ def main():
 
                 # 兜底检查：线程已结束但未收到完成消息
                 if thread is not None and not thread.is_alive():
-                    container = getattr(thread, "_result_container", {})
                     if "result" in container:
                         st.session_state.result = container["result"]
                     elif "error" in container:

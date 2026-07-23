@@ -87,10 +87,11 @@ def score_fundamental(financials: Optional[Dict[str, Any]], strategy: str = "mod
 def score_technical(price_data: Optional[pd.DataFrame], strategy: str = "moderate") -> float:
     """技术面评分（0~100）：均线多头、MACD金叉、成交量放大
     
-    当无价格数据时返回中性分 50.0（不惩罚也不奖励）。
+    当无价格数据时返回 50.0 作为中性分——即 0~100 范围的中点，
+    既不奖励也不惩罚，使基本面与情绪面的权重正常发挥作用。
     """
     if price_data is None or price_data.empty or len(price_data) < 20:
-        return 50.0  # 无数据时给中性分，不影响基本面主导的策略
+        return 50.0  # 0~100 的中点，表示技术面信号中性
 
     try:
         close_col = next((c for c in ['close', 'Close', '收盘'] if c in price_data.columns), None)
