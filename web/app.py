@@ -57,6 +57,12 @@ DISCLAIMER = (
     "投资决策请自行判断、**风险自负**。"
 )
 
+NETWORK_TIPS = (
+    "排查建议：① 关闭 VPN 走国内直连  "
+    "② 降低采样量后重试  "
+    "③ 稍等片刻后再试（Baostock 在并发高峰时可能返回错误）"
+)
+
 # ============ 日志设置 ============
 logging.basicConfig(
     level=logging.INFO,
@@ -284,12 +290,7 @@ def main():
         if "停止" in err_msg:
             st.caption("运行已被手动停止。")
         else:
-            st.caption(
-                "排查建议：\n"
-                "① 检查网络连接（Baostock 需联网，建议关闭 VPN 走国内直连）\n"
-                "② 降低采样数量后重试\n"
-                "③ 稍等片刻后再试（Baostock 在并发高峰时可能返回错误）"
-            )
+            st.caption(NETWORK_TIPS)
 
     # -------- 结果展示 --------
     if st.session_state.result and not st.session_state.running:
@@ -301,9 +302,7 @@ def main():
                 st.warning(f"⏹ {err_text}")
             else:
                 st.warning(f"⚠️ {err_text}")
-                st.caption(
-                    "排查建议：① 关闭 VPN 走国内直连  ② 降低采样量后重试  ③ 稍后再试"
-                )
+                st.caption(NETWORK_TIPS)
             return
 
         selected: pd.DataFrame = result.get("selected", pd.DataFrame())

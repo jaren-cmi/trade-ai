@@ -388,14 +388,15 @@ def fetch_batch(codes: List[str],
                 progress_callback(total, total)
 
     finally:
-        # 不等待挂起的线程（它们作为daemon线程在后台超时后自行结束）
-        executor.shutdown(wait=False)
+        # cancel_futures: 取消尚未开始的 pending futures
+        # wait=False: 不阻塞等待已在运行中的线程（它们作为 daemon 线程在后台完成或超时）
+        executor.shutdown(wait=False, cancel_futures=True)
 
     success = len(results)
-    failed = total - completed
+    uncompleted = total - completed
     logger.info(
         f"✅ 批量查询完成: 成功 {success} 只 / 共处理 {completed} 只 / "
-        f"超时未处理 {failed} 只（已跳过）"
+        f"超时未处理 {uncompleted} 只（已跳过）"
     )
 
     if not results:
@@ -462,7 +463,7 @@ def _fetch_single_stock_with_retry(code: str, fields: List[str],
     last_exc: Optional[Exception] = None
     for attempt in range(max_retries + 1):
         if attempt > 0:
-            time.sleep(1.0 * attempt)  # retry 间退避（锁外等待）
+            time.sleep(2 ** (attempt - 1))  # 指数退避：1s, 2s, 4s, …（锁外等待）
         try:
             with _bs_rlock:
                 if rate_limit_sleep > 0:
