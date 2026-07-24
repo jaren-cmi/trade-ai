@@ -6,6 +6,10 @@ baostock:
   login_user: "anonymous"
   login_password: "123456"
   rate_limit_ms: 300
+  max_workers: 3          # 并发线程数（降低以减少Baostock数据损坏概率）
+  request_timeout: 20     # 单请求超时秒数（仅用于整体超时计算）
+  max_retries: 2          # 单股最大重试次数
+  rate_limit_sleep: 0.1   # 每次Baostock请求间最小间隔（秒，在锁内生效）
 
 # Tavily 新闻情绪API（可选，默认关闭）
 tavily:
