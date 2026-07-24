@@ -1,0 +1,47 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# 虚拟环境
+venv/
+.venv/
+env/
+.env/
+
+# 数据与缓存（运行时生成，通过 volume 挂载到宿主机）
+data/
+*.pkl
+*.csv
+
+# 报告输出（通过 volume 挂载）
+reports/
+
+# 日志
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# macOS
+.DS_Store
+
+# Git
+.git/
+.gitignore
+
+# 测试
+tests/
+*.test.py
+
+# 文档（不需要打进镜像）
+*.md
+notebooks/
+
+# 临时文件
+tmp/
+*.tmp

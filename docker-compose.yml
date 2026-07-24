@@ -1,0 +1,30 @@
+# =============================================================
+# docker-compose.yml — A股智能选股 Trade-AI
+# =============================================================
+#
+# 启动命令（Windows PowerShell / CMD / Git Bash）：
+#   docker compose up --build
+#
+# 然后浏览器打开：http://localhost:8501
+# =============================================================
+
+services:
+  stock-picker:
+    build: .
+    container_name: trade-ai-stock-picker
+    ports:
+      - "8501:8501"
+    volumes:
+      # 报告文件（Excel/Markdown）自动保存到宿主机 ./reports 目录
+      - ./reports:/app/reports
+      # 数据缓存（避免每次重建容器都重新查询）
+      - ./data:/app/data
+    environment:
+      # 可选：Tavily 情绪分析 API Key（留空则禁用情绪面评分）
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+    restart: unless-stopped
+    # 容器需要联网访问 Baostock 服务
+    # 如果遇到网络问题，可以取消注释以下 dns 配置
+    # dns:
+    #   - 8.8.8.8
+    #   - 114.114.114.114
