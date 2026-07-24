@@ -9,6 +9,7 @@
 import pandas as pd
 import logging
 import random
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Callable
@@ -64,7 +65,8 @@ class StockPickerEngine:
             send_qq: bool = False,
             top_n: int = 30,
             sample_size: Optional[int] = None,
-            progress_callback: Optional[Callable[[str], None]] = None
+            progress_callback: Optional[Callable[[str], None]] = None,
+            stop_event: Optional[threading.Event] = None,
             ) -> Dict[str, Any]:
         """
         执行完整选股流程
@@ -79,6 +81,7 @@ class StockPickerEngine:
             top_n: 最终推荐数量
             sample_size: 采样大小（None=全市场，int=采样N只）
             progress_callback: 进度回调 fn(message: str)
+            stop_event: 停止信号 Event，设置后提前中断数据获取
 
         Returns:
             结果字典（包含 selected, report_md, excel_path, stats）
@@ -116,6 +119,12 @@ class StockPickerEngine:
         # ========== Step 2: 批量获取数据 ==========
         _notify(f"【Step 2/6】批量获取数据（多线程，共 {len(stock_codes)} 只）...")
 
+        # 从配置读取并发参数（data_sources.yaml → baostock）
+        bs_cfg = self.fetcher.config.get('baostock', {})
+        max_workers = int(bs_cfg.get('max_workers', 3))
+        max_retries = int(bs_cfg.get('max_retries', 2))
+        rate_limit_sleep = float(bs_cfg.get('rate_limit_sleep', 0.1))
+
         fetch_progress = [0]
 
         def _fetch_progress_cb(completed: int, total: int):
@@ -128,13 +137,38 @@ class StockPickerEngine:
             stock_codes,
             fields=['basic', 'valuation', 'financials'],
             use_cache=use_cache,
-            max_workers=10,
-            progress_callback=_fetch_progress_cb
+            max_workers=max_workers,
+            progress_callback=_fetch_progress_cb,
+            stop_event=stop_event,
+            max_retries=max_retries,
+            rate_limit_sleep=rate_limit_sleep,
         )
-        _notify(f"数据获取完成: {len(data_df)} 只")
+
+        # 检查是否被用户停止
+        if stop_event is not None and stop_event.is_set():
+            _notify("⏹ 运行已停止")
+            return {"error": "运行已停止", "selected": pd.DataFrame(),
+                    "stats": {"selected": 0, "total_stocks": len(stock_codes),
+                               "data_fetched": len(data_df)}}
+
+        success_count = len(data_df)
+        skipped_count = len(stock_codes) - success_count
+        _notify(
+            f"数据获取完成: 成功 {success_count} 只"
+            + (f"（失败/过滤 {skipped_count} 只，已跳过）" if skipped_count > 0 else "")
+        )
 
         if data_df.empty:
-            return {"error": "无有效数据", "selected": pd.DataFrame(), "stats": {"selected": 0}}
+            return {
+                "error": (
+                    "无法获取任何股票数据。可能原因：\n"
+                    "① Baostock 网络不稳定 — 稍后重试\n"
+                    "② VPN 影响国内数据连接 — 尝试关闭 VPN\n"
+                    "③ 采样量过大 — 调小采样数量后重试"
+                ),
+                "selected": pd.DataFrame(),
+                "stats": {"selected": 0, "total_stocks": len(stock_codes), "data_fetched": 0},
+            }
 
         # ========== Step 3: 策略评分 ==========
         _notify("【Step 3/6】应用策略评分...")

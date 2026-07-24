@@ -57,6 +57,12 @@ DISCLAIMER = (
     "投资决策请自行判断、**风险自负**。"
 )
 
+NETWORK_TIPS = (
+    "排查建议：① 关闭 VPN 走国内直连  "
+    "② 降低采样量后重试  "
+    "③ 稍等片刻后再试（Baostock 在并发高峰时可能返回错误）"
+)
+
 # ============ 日志设置 ============
 logging.basicConfig(
     level=logging.INFO,
@@ -76,6 +82,7 @@ def _init_state():
         "run_id": 0,
         "msg_queue": None,        # thread-safe queue for progress messages
         "result_container": {},   # shared dict for engine result/error
+        "stop_event": None,       # threading.Event to signal the engine to stop
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -94,6 +101,7 @@ def _run_engine_in_background(
     run_id: int,
     msg_queue: "queue.Queue[tuple]",
     result_container: dict,
+    stop_event: threading.Event,
 ):
     """在后台线程中运行选股引擎，通过线程安全队列传递进度消息
     
@@ -121,6 +129,7 @@ def _run_engine_in_background(
             send_qq=False,
             top_n=50,
             progress_callback=_progress,
+            stop_event=stop_event,
         )
         result_container["result"] = result
         msg_queue.put(("done", None))
@@ -179,10 +188,15 @@ def main():
         if st.session_state.running:
             stop_clicked = st.button("⏹ 停止", use_container_width=True)
             if stop_clicked:
+                # 先通知引擎停止（通过 Event），再清除状态
+                stop_ev: Optional[threading.Event] = st.session_state.get("stop_event")
+                if stop_ev is not None:
+                    stop_ev.set()
                 st.session_state.running = False
                 st.session_state.run_id += 1  # 使后台线程结果失效
                 st.session_state.progress_messages = []
                 st.session_state.msg_queue = None
+                st.session_state.stop_event = None
                 st.rerun()
 
     # -------- 启动后台任务 --------
@@ -194,6 +208,10 @@ def main():
         st.session_state.run_id += 1
         run_id = st.session_state.run_id
 
+        # 创建停止信号 Event（供用户点击「停止」时触发）
+        stop_ev = threading.Event()
+        st.session_state.stop_event = stop_ev
+
         # 使用线程安全队列传递消息，result_container 存入 session_state 避免修改 Thread 对象
         msg_q: queue.Queue = queue.Queue()
         result_container: dict = {}
@@ -203,7 +221,7 @@ def main():
         t = threading.Thread(
             target=_run_engine_in_background,
             args=(pool, strategy_name, sample_size, use_cache, run_id,
-                  msg_q, result_container),
+                  msg_q, result_container, stop_ev),
             daemon=True,
         )
         t.start()
@@ -267,15 +285,24 @@ def main():
 
     # -------- 错误展示 --------
     if st.session_state.error:
-        st.error(f"❌ 运行失败：{st.session_state.error}")
-        st.caption("请检查网络连接（Baostock 需联网）或稍后重试。")
+        err_msg = st.session_state.error
+        st.error(f"❌ 运行失败：{err_msg}")
+        if "停止" in err_msg:
+            st.caption("运行已被手动停止。")
+        else:
+            st.caption(NETWORK_TIPS)
 
     # -------- 结果展示 --------
     if st.session_state.result and not st.session_state.running:
         result = st.session_state.result
 
         if "error" in result and result["error"]:
-            st.warning(f"⚠️ {result['error']}")
+            err_text: str = result["error"]
+            if "停止" in err_text:
+                st.warning(f"⏹ {err_text}")
+            else:
+                st.warning(f"⚠️ {err_text}")
+                st.caption(NETWORK_TIPS)
             return
 
         selected: pd.DataFrame = result.get("selected", pd.DataFrame())

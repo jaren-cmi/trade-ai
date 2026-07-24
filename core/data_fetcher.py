@@ -19,8 +19,11 @@ import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
+import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +33,13 @@ logger = logging.getLogger(__name__)
 _stock_info_cache: Optional[Dict] = None  # 股票基本信息缓存（code -> name）
 
 
-# ============== 全局登录状态 ==============
+# ============== 全局登录状态 & 线程安全锁 ==============
 
 _bs_logged_in = False
+
+# Re-entrant lock: serializes ALL Baostock socket calls to prevent concurrent
+# access corruption (UnicodeDecodeError / "list index out of range" etc.)
+_bs_rlock = threading.RLock()
 
 
 def _ensure_login():
@@ -296,107 +303,181 @@ def get_financials_baostock(symbol: str) -> Dict[str, Any]:
 
 def fetch_batch(codes: List[str],
                 fields: List[str] = None,
-                max_workers: int = 10,
+                max_workers: int = 3,
                 use_cache: bool = False,
-                progress_callback=None
+                progress_callback=None,
+                stop_event: Optional[threading.Event] = None,
+                max_retries: int = 2,
+                rate_limit_sleep: float = 0.1,
                 ) -> pd.DataFrame:
     """
-    批量查询多只股票数据（多线程）
+    批量查询多只股票数据（多线程 + 超时保护 + 失败跳过）
 
     Args:
         codes: 股票代码列表（Baostock格式或6位数字）
         fields: 字段列表 ['basic', 'valuation', 'financials']
-        max_workers: 并发线程数
-        use_cache: 是否使用缓存
+        max_workers: 并发线程数（建议 3，过高易导致Baostock数据损坏）
+        use_cache: 是否使用缓存（当前版本暂未实现）
         progress_callback: 进度回调函数 fn(completed, total)
+        stop_event: 停止信号 Event，设置后提前退出
+        max_retries: 单股最大重试次数
+        rate_limit_sleep: 每次Baostock请求前最小间隔（秒，在锁内生效）
 
     Returns:
-        DataFrame，每行一只股票
+        DataFrame，每行一只股票（失败/过滤的股票自动跳过）
     """
     if fields is None:
         fields = ['basic', 'valuation', 'financials']
 
     _ensure_login()
 
-    results = []
+    results: List[Dict[str, Any]] = []
     total = len(codes)
 
-    logger.info(f"开始批量查询: {total} 只股票，{max_workers} 线程")
+    # 整体超时：每只股票最多5秒，最少60秒，最多600秒
+    overall_timeout = max(60, min(600, total * 5))
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    logger.info(f"开始批量查询: {total} 只股票，{max_workers} 线程，"
+                f"整体超时 {overall_timeout}s")
+
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
         future_to_code = {
-            executor.submit(_fetch_single_stock, code, fields): code
+            executor.submit(
+                _fetch_single_stock_with_retry, code, fields, max_retries, rate_limit_sleep
+            ): code
             for code in codes
         }
 
         completed = 0
-        for future in as_completed(future_to_code):
-            code = future_to_code[future]
-            try:
-                data = future.result(timeout=15)
-                if data:
-                    results.append(data)
-            except Exception as e:
-                logger.debug(f"查询 {code} 异常: {e}")
 
-            completed += 1
+        try:
+            for future in as_completed(future_to_code, timeout=overall_timeout):
+                # 检查停止信号
+                if stop_event is not None and stop_event.is_set():
+                    logger.info(f"收到停止信号，中断批量查询 ({completed}/{total})")
+                    # 强制进度到100%以避免进度卡住
+                    if progress_callback:
+                        progress_callback(total, total)
+                    break
+
+                code = future_to_code[future]
+                try:
+                    data = future.result()
+                    if data:
+                        results.append(data)
+                except Exception as e:
+                    logger.debug(f"查询 {code} 结果获取异常: {e}")
+
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed, total)
+                if completed % 10 == 0 or completed == total:
+                    logger.info(
+                        f"  进度: {completed}/{total} ({completed / total * 100:.0f}%) "
+                        f"有效: {len(results)}"
+                    )
+
+        except concurrent.futures.TimeoutError:
+            skipped = total - completed
+            logger.warning(
+                f"批量查询整体超时 ({overall_timeout}s)，{skipped} 只未完成，已跳过"
+            )
+            # 推进进度到100%，避免前端卡住
             if progress_callback:
-                progress_callback(completed, total)
-            if completed % 50 == 0:
-                logger.info(f"  进度: {completed}/{total} ({completed/total*100:.0f}%)")
+                progress_callback(total, total)
+
+    finally:
+        # cancel_futures: 取消尚未开始的 pending futures
+        # wait=False: 不阻塞等待已在运行中的线程（它们作为 daemon 线程在后台完成或超时）
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    success = len(results)
+    uncompleted = total - completed
+    logger.info(
+        f"✅ 批量查询完成: 成功 {success} 只 / 共处理 {completed} 只 / "
+        f"超时未处理 {uncompleted} 只（已跳过）"
+    )
 
     if not results:
         logger.warning("批量查询未获取到有效数据")
         return pd.DataFrame()
 
     df = pd.DataFrame(results)
-    logger.info(f"✅ 批量查询完成: {len(df)}/{total} 只有效")
     return df
 
 
 def _fetch_single_stock(code: str, fields: List[str]) -> Optional[Dict[str, Any]]:
-    """查询单只股票（用于批量查询）"""
-    try:
-        bs_code = _normalize_code(code)
+    """查询单只股票（用于批量查询）。
+    
+    调用方负责持有 _bs_rlock，本函数不捕获异常（由上层重试逻辑处理）。
+    返回 None 表示"合法跳过"（ST股/亏损股/无数据），抛出异常表示网络/解码错误。
+    """
+    bs_code = _normalize_code(code)
 
-        info = get_stock_info_baostock(bs_code)
-        name = info.get('名称', '') if info else ''
+    info = get_stock_info_baostock(bs_code)
+    name = info.get('名称', '') if info else ''
 
-        val = get_valuation_snapshot(bs_code)
-        pe = val['pe'] if val else None
-        pb = val['pb'] if val else None
-        close = val['close'] if val else None
+    val = get_valuation_snapshot(bs_code)
+    pe = val['pe'] if val else None
+    pb = val['pb'] if val else None
+    close = val['close'] if val else None
 
-        fins = get_financials_baostock(bs_code) if 'financials' in fields else {}
+    fins = get_financials_baostock(bs_code) if 'financials' in fields else {}
 
-        record = {
-            '代码': _extract_code(bs_code),
-            '名称': name,
-            '收盘价': close,
-            'PE': pe,
-            'PB': pb,
-        }
+    record = {
+        '代码': _extract_code(bs_code),
+        '名称': name,
+        '收盘价': close,
+        'PE': pe,
+        'PB': pb,
+    }
 
-        if 'financials' in fields:
-            record['ROE'] = fins.get('roe')
-            record['营收增长率'] = fins.get('revenue_growth')
-            record['净利润增长率'] = fins.get('profit_growth')
-            record['毛利率'] = fins.get('gross_margin')
-            record['净利率'] = fins.get('net_margin')
+    if 'financials' in fields:
+        record['ROE'] = fins.get('roe')
+        record['营收增长率'] = fins.get('revenue_growth')
+        record['净利润增长率'] = fins.get('profit_growth')
+        record['毛利率'] = fins.get('gross_margin')
+        record['净利率'] = fins.get('net_margin')
 
-        # 过滤亏损股
-        if pe is not None and pe <= 0:
-            return None
-
-        # 过滤ST股
-        if name and ('ST' in name or '退市' in name):
-            return None
-
-        return record
-
-    except Exception as e:
-        logger.debug(f"单股查询失败 {code}: {e}")
+    # 过滤亏损股
+    if pe is not None and pe <= 0:
         return None
+
+    # 过滤ST股
+    if name and ('ST' in name or '退市' in name):
+        return None
+
+    return record
+
+
+def _fetch_single_stock_with_retry(code: str, fields: List[str],
+                                    max_retries: int = 2,
+                                    rate_limit_sleep: float = 0.1) -> Optional[Dict[str, Any]]:
+    """带重试、限速、线程安全锁的单只股票查询。
+
+    - 持有全局 _bs_rlock 以串行化 Baostock socket 访问，防止并发数据损坏。
+    - 捕获 UnicodeDecodeError / IndexError / 网络异常并重试最多 max_retries 次。
+    - 超过重试次数后返回 None（跳过该股票，不拖住整个批次）。
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(max_retries + 1):
+        if attempt > 0:
+            time.sleep(2 ** (attempt - 1))  # 指数退避：1s, 2s, 4s, …（锁外等待）
+        try:
+            with _bs_rlock:
+                if rate_limit_sleep > 0:
+                    time.sleep(rate_limit_sleep)  # 请求限速
+                return _fetch_single_stock(code, fields)
+        except (UnicodeDecodeError, IndexError) as e:
+            last_exc = e
+            logger.debug(f"查询 {code} 数据错误(尝试{attempt + 1}/{max_retries + 1}): {e}")
+        except Exception as e:
+            last_exc = e
+            logger.debug(f"查询 {code} 异常(尝试{attempt + 1}/{max_retries + 1}): {e}")
+
+    logger.debug(f"查询 {code} 已达最大重试次数，跳过: {last_exc}")
+    return None
 
 
 # ============== DataFetcher 类封装 ==============
@@ -434,11 +515,17 @@ class DataFetcher:
     def get_fundamental(self, symbol: str) -> Dict:
         return get_financials_baostock(symbol)
 
-    def fetch_batch(self, codes: List[str], fields=None, max_workers=10,
-                    use_cache=False, progress_callback=None) -> pd.DataFrame:
+    def fetch_batch(self, codes: List[str], fields=None, max_workers=3,
+                    use_cache=False, progress_callback=None,
+                    stop_event: Optional[threading.Event] = None,
+                    max_retries: int = 2,
+                    rate_limit_sleep: float = 0.1) -> pd.DataFrame:
         if fields is None:
             fields = ['basic', 'valuation', 'financials']
-        return fetch_batch(codes, fields, max_workers, use_cache, progress_callback)
+        return fetch_batch(codes, fields, max_workers, use_cache, progress_callback,
+                           stop_event=stop_event,
+                           max_retries=max_retries,
+                           rate_limit_sleep=rate_limit_sleep)
 
     def get_index_components(self, index: str) -> List[str]:
         return get_index_components(index)
