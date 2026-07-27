@@ -19,9 +19,11 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
 
 # 系统依赖：gcc（编译扩展）、中文轻量字体（Excel中文显示）
 # fonts-noto-cjk 体积过大且常下载失败，仅保留轻量的 fonts-wqy-zenhei
+# 字体安装非致命：若镜像源暂时不可用，构建仍可继续（Excel 仍可输出，仅字体退回默认）
 RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc \
-    && apt-get install -y --no-install-recommends fonts-wqy-zenhei || true \
+    && { apt-get install -y --no-install-recommends fonts-wqy-zenhei \
+         || echo "WARNING: fonts-wqy-zenhei install failed, continuing without CJK font"; } \
     && rm -rf /var/lib/apt/lists/*
 
 # 工作目录

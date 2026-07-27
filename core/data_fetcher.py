@@ -50,10 +50,10 @@ def _to_akshare_code(code: str) -> str:
     if "." in code:
         parts = code.split(".")
         if parts[0].lower() in ("sh", "sz", "bj"):
-            return parts[1]
+            return parts[1].zfill(6)
         # 形如 "600519.SH"
-        return parts[0]
-    return code
+        return parts[0].zfill(6)
+    return code.zfill(6)
 
 
 def _to_internal_code(code: str) -> str:
@@ -324,7 +324,9 @@ def get_financials_akshare(symbol: str) -> Dict[str, Any]:
     ak_code = _to_akshare_code(symbol)
 
     try:
-        fin_df = ak.stock_financial_analysis_indicator(stock=ak_code, start_year="2020")
+        # 只拉近2年的数据（取最新一行），减少传输量
+        start_year = str(datetime.now().year - 1)
+        fin_df = ak.stock_financial_analysis_indicator(stock=ak_code, start_year=start_year)
         if fin_df is not None and not fin_df.empty:
             latest = fin_df.iloc[0]  # 通常按时间倒序，取最新一行
 
@@ -421,7 +423,7 @@ def _fetch_single_stock_with_retry(
     last_exc: Optional[Exception] = None
     for attempt in range(max_retries + 1):
         if attempt > 0:
-            time.sleep(2 ** (attempt - 1))   # 指数退避：1s, 2s, ...
+            time.sleep(2 ** (attempt - 1))   # 指数退避：第1次重试等1s，第2次等2s，依此类推
         try:
             if rate_limit_sleep > 0:
                 time.sleep(rate_limit_sleep)
