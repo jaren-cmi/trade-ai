@@ -13,7 +13,7 @@
 - ⚡ **快速模式**：采样约 20-60 秒出结果；全市场扫描约 15-20 分钟
 - 📊 **双重报告**：Markdown 摘要 + Excel 详细数据（含中文字段）
 - 💾 **报告本地保存**：自动写入宿主机 `reports/` 目录，容器重建不丢失
-- 🔓 **免费数据源**：AKShare 免费无需注册/API Key，国内访问稳定
+- 🔓 **免费数据源**：AKShare（默认新浪财经）免费无需注册/API Key，国内访问稳定
 
 ---
 
@@ -144,7 +144,7 @@ streamlit run web/app.py
 
 **本工具仅供学习研究，不构成任何投资建议。**
 
-- 数据来自 AKShare，存在 T+1 延迟
+- 数据来自 AKShare（默认新浪财经接口），存在 T+1 延迟
 - 策略未经充分回测，历史表现不代表未来
 - 投资决策请自行判断、**风险自负**
 
@@ -156,4 +156,4 @@ streamlit run web/app.py
 
 致谢：
 - **[striferxu/stock-picker-plus](https://github.com/striferxu/stock-picker-plus)**（GPLv3）：本项目的核心选股逻辑来源
-- **[AKShare](https://akshare.akfamily.xyz)**：免费稳定的 A 股数据源（无需 API Key）
+- **[AKShare](https://akshare.akfamily.xyz)**：免费稳定的 A 股数据源（默认新浪财经，无需 API Key）

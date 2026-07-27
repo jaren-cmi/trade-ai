@@ -17,7 +17,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
@@ -31,9 +31,15 @@ logger = logging.getLogger(__name__)
 
 _spot_df_cache: Optional[pd.DataFrame] = None    # 全市场实时行情缓存
 _spot_cache_time: Optional[datetime] = None
+_spot_cache_provider_key: Optional[Tuple[str, ...]] = None
 _SPOT_CACHE_TTL = 300                            # 5分钟 TTL
 
 _spot_cache_lock = threading.Lock()
+_indicator_cache_lock = threading.Lock()
+_indicator_cache: Dict[str, Dict[str, Optional[float]]] = {}
+
+_AKSHARE_PROVIDER = "sina"
+_AKSHARE_PROVIDER_FALLBACKS = ["em"]
 
 
 # ============== 工具函数 ==============
@@ -53,6 +59,8 @@ def _to_akshare_code(code: str) -> str:
             return parts[1].zfill(6)
         # 形如 "600519.SH"
         return parts[0].zfill(6)
+    if len(code) >= 8 and code[:2].lower() in ("sh", "sz", "bj"):
+        return code[2:].zfill(6)
     return code.zfill(6)
 
 
@@ -87,39 +95,123 @@ def _extract_code(code: str) -> str:
         if parts[0].lower() in ("sh", "sz", "bj"):
             return parts[1]
         return parts[0]
+    if len(code) >= 8 and code[:2].lower() in ("sh", "sz", "bj"):
+        return code[2:]
     return code
+
+
+def _to_sina_symbol(code: str) -> str:
+    """内部代码/6位代码 -> 新浪格式（sh600519 / sz000858）。"""
+    code = str(code).strip()
+    if code.lower().startswith(("sh", "sz", "bj")) and "." not in code:
+        return code.lower()
+    if "." in code:
+        parts = code.split(".")
+        if parts[0].lower() in ("sh", "sz", "bj"):
+            return f"{parts[0].lower()}{parts[1].zfill(6)}"
+    code6 = _to_akshare_code(code)
+    if code6.startswith(("6", "9")):
+        return f"sh{code6}"
+    if code6.startswith(("0", "3")):
+        return f"sz{code6}"
+    return f"bj{code6}"
+
+
+def _normalize_provider(provider: str) -> str:
+    p = str(provider or "sina").strip().lower()
+    return "sina" if p in ("sina", "sinajs", "sina_finance") else ("em" if p in ("em", "eastmoney") else p)
+
+
+def _set_provider_config(provider: str = "sina", fallback_providers: Optional[List[str]] = None) -> None:
+    global _AKSHARE_PROVIDER, _AKSHARE_PROVIDER_FALLBACKS
+    _AKSHARE_PROVIDER = _normalize_provider(provider)
+    fallbacks = fallback_providers if fallback_providers is not None else ["em"]
+    normalized = []
+    for p in fallbacks:
+        np = _normalize_provider(p)
+        if np != _AKSHARE_PROVIDER and np not in normalized:
+            normalized.append(np)
+    _AKSHARE_PROVIDER_FALLBACKS = normalized
+
+
+def _provider_chain() -> List[str]:
+    return [_AKSHARE_PROVIDER] + [p for p in _AKSHARE_PROVIDER_FALLBACKS if p != _AKSHARE_PROVIDER]
+
+
+def _normalize_spot_data(df: pd.DataFrame) -> pd.DataFrame:
+    """统一实时行情字段，兼容新浪/东方财富返回差异。"""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    col_map = {
+        "symbol": "代码",
+        "代码": "代码",
+        "name": "名称",
+        "名称": "名称",
+        "trade": "最新价",
+        "最新价": "最新价",
+        "pricechange": "涨跌额",
+        "涨跌额": "涨跌额",
+        "changepercent": "涨跌幅",
+        "涨跌幅": "涨跌幅",
+        "buy": "买入",
+        "sell": "卖出",
+        "settlement": "昨收",
+        "open": "今开",
+        "high": "最高",
+        "low": "最低",
+        "volume": "成交量",
+        "amount": "成交额",
+        "ticktime": "时间",
+    }
+    out = out.rename(columns={k: v for k, v in col_map.items() if k in out.columns and k != v})
+    if "代码" in out.columns:
+        out["代码"] = out["代码"].astype(str).str.strip().apply(_to_akshare_code)
+    return out
+
+
+def _fetch_spot_by_provider(provider: str) -> pd.DataFrame:
+    if provider == "sina":
+        return _normalize_spot_data(ak.stock_zh_a_spot())
+    if provider == "em":
+        return _normalize_spot_data(ak.stock_zh_a_spot_em())
+    raise ValueError(f"不支持的数据源提供方: {provider}")
 
 
 # ============== 实时行情缓存 ==============
 
 def _get_spot_data() -> pd.DataFrame:
-    """获取全市场A股实时行情，带5分钟内存缓存。
-
-    返回 DataFrame（东方财富 stock_zh_a_spot_em 数据，典型列名）：
-      序号, 代码, 名称, 最新价, 涨跌幅, 涨跌额, 成交量, 成交额, 振幅,
-      最高, 最低, 今开, 昨收, 量比, 换手率, 市盈率-动态, 市净率,
-      总市值, 流通市值, ...
-    """
-    global _spot_df_cache, _spot_cache_time
+    """获取全市场A股实时行情（provider 可配置，带5分钟缓存）。"""
+    global _spot_df_cache, _spot_cache_time, _spot_cache_provider_key
 
     with _spot_cache_lock:
         now = datetime.now()
+        provider_key = tuple(_provider_chain())
         if (_spot_df_cache is not None and _spot_cache_time is not None and
+                _spot_cache_provider_key == provider_key and
                 (now - _spot_cache_time).total_seconds() < _SPOT_CACHE_TTL):
             return _spot_df_cache
 
-        try:
-            df = ak.stock_zh_a_spot_em()
-            _spot_df_cache = df
-            _spot_cache_time = now
-            logger.info(f"✅ 获取A股实时行情成功: {len(df)} 只")
-            return df
-        except Exception as e:
-            logger.error(f"获取A股实时行情失败: {e}")
-            if _spot_df_cache is not None:
-                logger.warning("使用行情旧缓存数据")
-                return _spot_df_cache
-            return pd.DataFrame()
+        last_error: Optional[Exception] = None
+        for provider in provider_key:
+            try:
+                df = _fetch_spot_by_provider(provider)
+                if df is None or df.empty:
+                    raise ValueError("返回空数据")
+                _spot_df_cache = df
+                _spot_cache_time = now
+                _spot_cache_provider_key = provider_key
+                logger.info(f"✅ 获取A股实时行情成功: {len(df)} 只（provider={provider}）")
+                return df
+            except Exception as e:
+                last_error = e
+                logger.warning(f"获取A股实时行情失败（provider={provider}）: {e}")
+
+        if _spot_df_cache is not None:
+            logger.warning("实时行情接口全部失败，使用旧缓存数据")
+            return _spot_df_cache
+        logger.error(f"无法获取A股实时行情数据: {last_error}")
+        return pd.DataFrame()
 
 
 # ============== 股票列表获取 ==============
@@ -135,11 +227,13 @@ def get_stock_basic() -> pd.DataFrame:
         logger.error("无法获取A股行情数据")
         return pd.DataFrame()
 
-    if "代码" not in spot.columns or "名称" not in spot.columns:
+    code_col = next((c for c in ["代码", "symbol"] if c in spot.columns), None)
+    name_col = next((c for c in ["名称", "name"] if c in spot.columns), None)
+    if code_col is None or name_col is None:
         logger.error(f"行情数据缺少字段，实际列: {list(spot.columns)}")
         return pd.DataFrame()
 
-    df = spot[["代码", "名称"]].copy()
+    df = spot[[code_col, name_col]].copy()
     df.columns = ["raw_code", "code_name"]
     df["code"] = df["raw_code"].apply(_to_internal_code)
 
@@ -214,26 +308,47 @@ def get_index_components(index: str = "hs300") -> List[str]:
 def get_stock_daily(symbol: str, days: int = 30) -> pd.DataFrame:
     """获取单只股票日线行情（前复权）。"""
     ak_code = _to_akshare_code(symbol)
+    sina_symbol = _to_sina_symbol(symbol)
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
 
-    try:
-        df = ak.stock_zh_a_hist(
-            symbol=ak_code,
-            period="daily",
-            start_date=start_date,
-            end_date=end_date,
-            adjust="qfq",
-        )
-    except Exception as e:
-        logger.debug(f"查询 {symbol} 日线失败: {e}")
-        return pd.DataFrame()
+    df = pd.DataFrame()
+    last_error: Optional[Exception] = None
+    for provider in _provider_chain():
+        try:
+            if provider == "sina":
+                df = ak.stock_zh_a_daily(symbol=sina_symbol, adjust="qfq")
+            elif provider == "em":
+                df = ak.stock_zh_a_hist(
+                    symbol=ak_code,
+                    period="daily",
+                    start_date=start_date,
+                    end_date=end_date,
+                    adjust="qfq",
+                )
+            else:
+                continue
+            if df is not None and not df.empty:
+                break
+        except Exception as e:
+            last_error = e
+            logger.debug(f"查询 {symbol} 日线失败（provider={provider}）: {e}")
+            continue
 
     if df is None or df.empty:
+        if last_error is not None:
+            logger.debug(f"查询 {symbol} 日线失败: {last_error}")
         return pd.DataFrame()
 
     # 列名映射为项目通用格式
     col_map = {
+        "date":  "date",
+        "open":  "open",
+        "close": "close",
+        "high":  "high",
+        "low":   "low",
+        "volume": "volume",
+        "amount": "amount",
         "日期":  "date",
         "开盘":  "open",
         "收盘":  "close",
@@ -259,6 +374,43 @@ def get_stock_daily(symbol: str, days: int = 30) -> pd.DataFrame:
         df = df.iloc[-days:]
 
     return df
+
+
+def _get_indicator_valuation(symbol: str) -> Dict[str, Optional[float]]:
+    """估值补齐：优先使用乐咕乐股接口，失败则返回空值。"""
+    code = _to_akshare_code(symbol)
+    with _indicator_cache_lock:
+        if code in _indicator_cache:
+            return _indicator_cache[code]
+
+    result: Dict[str, Optional[float]] = {"pe": None, "pb": None, "market_cap": None}
+
+    def _safe_float(val) -> Optional[float]:
+        try:
+            v = float(val)
+            return v if np.isfinite(v) else None
+        except (ValueError, TypeError):
+            return None
+
+    try:
+        ind = ak.stock_a_indicator_lg(symbol=_to_sina_symbol(symbol))
+        if ind is not None and not ind.empty:
+            latest = ind.iloc[-1]
+            pe_col = next((c for c in ["pe", "市盈率", "pe_ttm"] if c in ind.columns), None)
+            pb_col = next((c for c in ["pb", "市净率"] if c in ind.columns), None)
+            mcap_col = next(
+                (c for c in ["total_mv", "total_market_value", "总市值"] if c in ind.columns),
+                None,
+            )
+            result["pe"] = _safe_float(latest.get(pe_col)) if pe_col else None
+            result["pb"] = _safe_float(latest.get(pb_col)) if pb_col else None
+            result["market_cap"] = _safe_float(latest.get(mcap_col)) if mcap_col else None
+    except Exception as e:
+        logger.debug(f"乐咕估值补齐失败 {symbol}: {e}")
+
+    with _indicator_cache_lock:
+        _indicator_cache[code] = result
+    return result
 
 
 def get_valuation_from_spot(symbol: str) -> Optional[Dict[str, Any]]:
@@ -288,12 +440,20 @@ def get_valuation_from_spot(symbol: str) -> Optional[Dict[str, Any]]:
     close_col = next((c for c in ["最新价", "收盘", "当前价"] if c in spot.columns), None)
     mcap_col  = next((c for c in ["总市值"] if c in spot.columns), None)
 
-    return {
+    result = {
         "pe":         _safe_float(r[pe_col])    if pe_col    else None,
         "pb":         _safe_float(r[pb_col])    if pb_col    else None,
         "close":      _safe_float(r[close_col]) if close_col else None,
         "market_cap": _safe_float(r[mcap_col])  if mcap_col  else None,
     }
+    if result["pe"] is None or result["pb"] is None or result["market_cap"] is None:
+        extra = _get_indicator_valuation(symbol)
+        result["pe"] = result["pe"] if result["pe"] is not None else extra.get("pe")
+        result["pb"] = result["pb"] if result["pb"] is not None else extra.get("pb")
+        result["market_cap"] = (
+            result["market_cap"] if result["market_cap"] is not None else extra.get("market_cap")
+        )
+    return result
 
 
 # ============== 财务数据查询 ==============
@@ -545,6 +705,11 @@ class DataFetcher:
 
     def __init__(self, config_path: str = "config/"):
         self.config = self._load_config(config_path)
+        ak_cfg = self.config.get("akshare", {})
+        _set_provider_config(
+            provider=ak_cfg.get("provider", "sina"),
+            fallback_providers=ak_cfg.get("fallback_providers", ["em"]),
+        )
 
     def _load_config(self, path: str) -> Dict:
         import yaml

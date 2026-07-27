@@ -3,6 +3,9 @@
 # AKShare 数据源（主数据源，免费，无需注册/Token）
 akshare:
   enabled: true
+  provider: sina         # 默认新浪；可选 em（东方财富）
+  fallback_providers:    # 主 provider 不可用时按顺序回退
+    - em
   max_workers: 5          # 并发线程数（AKShare 基于 HTTP，可适当提高）
   request_timeout: 30     # 单请求超时秒数
   max_retries: 2          # 单股最大重试次数
