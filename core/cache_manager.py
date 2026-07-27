@@ -81,7 +81,7 @@ class CacheManager:
         logger.info(f"清理缓存: 删除 {cleared} 个旧文件")
 
     def get_stock_list_cache(self) -> Optional[pd.DataFrame]:
-        return self.get("stock_list", {"source": "baostock"})
+        return self.get("stock_list", {"source": "akshare"})
 
     def set_stock_list_cache(self, df: pd.DataFrame):
-        self.set("stock_list", {"source": "baostock"}, df)
+        self.set("stock_list", {"source": "akshare"}, df)

@@ -1,6 +1,6 @@
 # Trade-AI · A股智能选股
 
-基于 [Baostock](https://baostock.com) 免费数据源的 A 股智能选股应用。
+基于 [AKShare](https://akshare.akfamily.xyz) 免费数据源的 A 股智能选股应用。
 **Docker 一键部署，浏览器直接使用**：选择股票池与策略，点击开始，在网页上看到推荐股票榜并下载 Excel / Markdown 报告。
 
 > 本项目基于并改编自开源项目 [striferxu/stock-picker-plus](https://github.com/striferxu/stock-picker-plus)（GPLv3），致谢原作者 Simon。
@@ -13,7 +13,7 @@
 - ⚡ **快速模式**：采样约 20-60 秒出结果；全市场扫描约 15-20 分钟
 - 📊 **双重报告**：Markdown 摘要 + Excel 详细数据（含中文字段）
 - 💾 **报告本地保存**：自动写入宿主机 `reports/` 目录，容器重建不丢失
-- 🔓 **免费数据源**：Baostock 免费无需注册/API Key，容器内联网即可用
+- 🔓 **免费数据源**：AKShare 免费无需注册/API Key，国内访问稳定
 
 ---
 
@@ -93,7 +93,7 @@ copy .env.example .env
 trade-ai/
 ├── core/                   # 核心选股引擎
 │   ├── engine.py           # 主引擎（协调全流程）
-│   ├── data_fetcher.py     # Baostock 数据获取
+│   ├── data_fetcher.py     # AKShare 数据获取
 │   ├── scorer.py           # 三维评分算法
 │   ├── strategies.py       # 多因子/PE/三维评分策略
 │   ├── indicators.py       # 技术指标（ta 库）
@@ -144,7 +144,7 @@ streamlit run web/app.py
 
 **本工具仅供学习研究，不构成任何投资建议。**
 
-- 数据来自 Baostock，存在 T+1 延迟
+- 数据来自 AKShare，存在 T+1 延迟
 - 策略未经充分回测，历史表现不代表未来
 - 投资决策请自行判断、**风险自负**
 
@@ -156,4 +156,4 @@ streamlit run web/app.py
 
 致谢：
 - **[striferxu/stock-picker-plus](https://github.com/striferxu/stock-picker-plus)**（GPLv3）：本项目的核心选股逻辑来源
-- **[Baostock](https://baostock.com)**：免费稳定的 A 股数据源
+- **[AKShare](https://akshare.akfamily.xyz)**：免费稳定的 A 股数据源（无需 API Key）

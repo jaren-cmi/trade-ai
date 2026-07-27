@@ -119,11 +119,11 @@ class StockPickerEngine:
         # ========== Step 2: 批量获取数据 ==========
         _notify(f"【Step 2/6】批量获取数据（多线程，共 {len(stock_codes)} 只）...")
 
-        # 从配置读取并发参数（data_sources.yaml → baostock）
-        bs_cfg = self.fetcher.config.get('baostock', {})
-        max_workers = int(bs_cfg.get('max_workers', 3))
-        max_retries = int(bs_cfg.get('max_retries', 2))
-        rate_limit_sleep = float(bs_cfg.get('rate_limit_sleep', 0.1))
+        # 从配置读取并发参数（data_sources.yaml → akshare）
+        ak_cfg = self.fetcher.config.get('akshare', {})
+        max_workers = int(ak_cfg.get('max_workers', 5))
+        max_retries = int(ak_cfg.get('max_retries', 2))
+        rate_limit_sleep = float(ak_cfg.get('rate_limit_sleep', 0.3))
 
         fetch_progress = [0]
 
@@ -162,9 +162,9 @@ class StockPickerEngine:
             return {
                 "error": (
                     "无法获取任何股票数据。可能原因：\n"
-                    "① Baostock 网络不稳定 — 稍后重试\n"
-                    "② VPN 影响国内数据连接 — 尝试关闭 VPN\n"
-                    "③ 采样量过大 — 调小采样数量后重试"
+                    "① AKShare 接口限流或网络不稳定 — 稍后重试\n"
+                    "② 采样量过大 — 调小采样数量后重试\n"
+                    "③ 行情服务器暂时不可用 — 稍等片刻后再试"
                 ),
                 "selected": pd.DataFrame(),
                 "stats": {"selected": 0, "total_stocks": len(stock_codes), "data_fetched": 0},
@@ -236,11 +236,12 @@ class StockPickerEngine:
         }
 
     def _filter_stock_pool(self, stock_df: pd.DataFrame, pool: str) -> List[str]:
-        """根据股票池筛选代码列表，返回 Baostock 格式代码"""
+        """根据股票池筛选代码列表，返回内部格式代码（sh.600519 / sz.000858）"""
         if pool == "all":
             df = stock_df.copy()
             df = df[df['code'].str.startswith(('sh.', 'sz.'))]
-            df = df[~df['code_name'].str.contains('ST|退市', na=False)]
+            if 'code_name' in df.columns:
+                df = df[~df['code_name'].str.contains('ST|退市', na=False)]
             return df['code'].tolist()
         else:
             return self.fetcher.get_index_components(pool)
