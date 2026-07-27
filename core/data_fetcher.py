@@ -53,14 +53,14 @@ def _to_akshare_code(code: str) -> str:
         "600519"     → "600519"（不变）
     """
     code = str(code).strip()
+    if len(code) >= 8 and code[:2].lower() in ("sh", "sz", "bj"):
+        return code[2:].zfill(6)
     if "." in code:
         parts = code.split(".")
         if parts[0].lower() in ("sh", "sz", "bj"):
             return parts[1].zfill(6)
         # 形如 "600519.SH"
         return parts[0].zfill(6)
-    if len(code) >= 8 and code[:2].lower() in ("sh", "sz", "bj"):
-        return code[2:].zfill(6)
     return code.zfill(6)
 
 
@@ -90,13 +90,13 @@ def _to_internal_code(code: str) -> str:
 def _extract_code(code: str) -> str:
     """提取6位数字代码（去掉市场前缀）。"""
     code = str(code).strip()
+    if len(code) >= 8 and code[:2].lower() in ("sh", "sz", "bj"):
+        return code[2:]
     if "." in code:
         parts = code.split(".")
         if parts[0].lower() in ("sh", "sz", "bj"):
             return parts[1]
         return parts[0]
-    if len(code) >= 8 and code[:2].lower() in ("sh", "sz", "bj"):
-        return code[2:]
     return code
 
 
@@ -186,21 +186,21 @@ def _get_spot_data() -> pd.DataFrame:
 
     with _spot_cache_lock:
         now = datetime.now()
-        provider_key = tuple(_provider_chain())
+        providers = tuple(_provider_chain())
         if (_spot_df_cache is not None and _spot_cache_time is not None and
-                _spot_cache_provider_key == provider_key and
+                _spot_cache_provider_key == providers and
                 (now - _spot_cache_time).total_seconds() < _SPOT_CACHE_TTL):
             return _spot_df_cache
 
         last_error: Optional[Exception] = None
-        for provider in provider_key:
+        for provider in providers:
             try:
                 df = _fetch_spot_by_provider(provider)
                 if df is None or df.empty:
                     raise ValueError("返回空数据")
                 _spot_df_cache = df
                 _spot_cache_time = now
-                _spot_cache_provider_key = provider_key
+                _spot_cache_provider_key = providers
                 logger.info(f"✅ 获取A股实时行情成功: {len(df)} 只（provider={provider}）")
                 return df
             except Exception as e:
@@ -405,8 +405,12 @@ def _get_indicator_valuation(symbol: str) -> Dict[str, Optional[float]]:
             result["pe"] = _safe_float(latest.get(pe_col)) if pe_col else None
             result["pb"] = _safe_float(latest.get(pb_col)) if pb_col else None
             result["market_cap"] = _safe_float(latest.get(mcap_col)) if mcap_col else None
+    except AttributeError as e:
+        logger.debug(f"乐咕乐股接口不可用 {symbol}: {e}（AKShare 版本可能不支持）")
     except Exception as e:
-        logger.debug(f"乐咕估值补齐失败 {symbol}: {e}")
+        logger.debug(
+            f"乐咕乐股估值补齐失败 {symbol}: {e}（PE/PB/总市值将保持缺失并走容错逻辑）"
+        )
 
     with _indicator_cache_lock:
         _indicator_cache[code] = result
