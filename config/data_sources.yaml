@@ -1,15 +1,12 @@
 # 数据源配置 - A股智能选股
 
-# Baostock 数据源（主数据源，免费，无需注册）
-baostock:
+# AKShare 数据源（主数据源，免费，无需注册/Token）
+akshare:
   enabled: true
-  login_user: "anonymous"
-  login_password: "123456"
-  rate_limit_ms: 300
-  max_workers: 3          # 并发线程数（降低以减少Baostock数据损坏概率）
-  request_timeout: 20     # 单请求超时秒数（仅用于整体超时计算）
+  max_workers: 5          # 并发线程数（AKShare 基于 HTTP，可适当提高）
+  request_timeout: 30     # 单请求超时秒数
   max_retries: 2          # 单股最大重试次数
-  rate_limit_sleep: 0.1   # 每次Baostock请求间最小间隔（秒，在锁内生效）
+  rate_limit_sleep: 0.3   # 每次请求前最小间隔（秒，用于限速）
 
 # Tavily 新闻情绪API（可选，默认关闭）
 tavily:

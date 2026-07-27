@@ -8,19 +8,35 @@
 
 FROM python:3.12-slim
 
-# 系统依赖 + 中文字体（用于 Excel 报告中文显示）
+# 替换为清华镜像源，加速 apt-get（兼容 Debian bookworm 及更早版本）
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' \
+            /etc/apt/sources.list.d/debian.sources; \
+    else \
+        sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' \
+            /etc/apt/sources.list; \
+    fi
+
+# 系统依赖：gcc（编译扩展）、中文轻量字体（Excel中文显示）
+# fonts-noto-cjk 体积过大且常下载失败，仅保留轻量的 fonts-wqy-zenhei
+# 字体安装非致命：若镜像源暂时不可用，构建仍可继续（Excel 仍可输出，仅字体退回默认）
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        fonts-wqy-zenhei \
-        fonts-noto-cjk \
         gcc \
-        && rm -rf /var/lib/apt/lists/*
+    && { apt-get install -y --no-install-recommends fonts-wqy-zenhei \
+         || echo "WARNING: fonts-wqy-zenhei install failed, continuing without CJK font"; } \
+    && rm -rf /var/lib/apt/lists/*
 
 # 工作目录
 WORKDIR /app
 
 # 先复制依赖文件，充分利用 Docker 层缓存
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# 使用清华 pip 镜像加速安装
+RUN pip install --no-cache-dir \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple \
+        --trusted-host pypi.tuna.tsinghua.edu.cn \
+        -r requirements.txt
 
 # 复制项目代码
 COPY . .

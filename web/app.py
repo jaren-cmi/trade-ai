@@ -53,14 +53,14 @@ MODE_OPTIONS = {
 
 DISCLAIMER = (
     "⚠️ **免责声明**：本工具仅供学习研究，**不构成任何投资建议**。"
-    "数据来自 Baostock，存在延迟；策略未经充分回测；"
+    "数据来自 AKShare，存在延迟；策略未经充分回测；"
     "投资决策请自行判断、**风险自负**。"
 )
 
 NETWORK_TIPS = (
-    "排查建议：① 关闭 VPN 走国内直连  "
+    "排查建议：① 确认网络可正常访问东方财富等A股数据源  "
     "② 降低采样量后重试  "
-    "③ 稍等片刻后再试（Baostock 在并发高峰时可能返回错误）"
+    "③ 稍等片刻后再试（接口偶发限流属正常）"
 )
 
 # ============ 日志设置 ============
@@ -145,7 +145,7 @@ def _run_engine_in_background(
 def main():
     # 标题
     st.title("📈 A股智能选股 · Trade-AI")
-    st.caption("基于 Baostock 免费数据源，Docker 一键部署，网页直接使用")
+    st.caption("基于 AKShare 免费数据源，Docker 一键部署，网页直接使用")
 
     # 免责声明（固定展示）
     st.info(DISCLAIMER)
@@ -172,7 +172,7 @@ def main():
         use_cache = st.checkbox("💾 使用缓存加速（当日内避免重复请求）", value=True)
 
         st.divider()
-        st.caption("数据来源：[Baostock](https://baostock.com)（免费，无需 API Key）")
+        st.caption("数据来源：[AKShare](https://akshare.akfamily.xyz)（免费，无需 API Key）")
         st.caption("开源致谢：[striferxu/stock-picker-plus](https://github.com/striferxu/stock-picker-plus)（GPLv3）")
 
     # -------- 操作按钮 --------
