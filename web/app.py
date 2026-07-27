@@ -58,7 +58,7 @@ DISCLAIMER = (
 )
 
 NETWORK_TIPS = (
-    "排查建议：① 确认网络可正常访问东方财富等A股数据源  "
+    "排查建议：① 确认网络可正常访问新浪财经等A股数据源  "
     "② 降低采样量后重试  "
     "③ 稍等片刻后再试（接口偶发限流属正常）"
 )
@@ -145,7 +145,7 @@ def _run_engine_in_background(
 def main():
     # 标题
     st.title("📈 A股智能选股 · Trade-AI")
-    st.caption("基于 AKShare 免费数据源，Docker 一键部署，网页直接使用")
+    st.caption("基于 AKShare（默认新浪财经）免费数据源，Docker 一键部署，网页直接使用")
 
     # 免责声明（固定展示）
     st.info(DISCLAIMER)
@@ -172,7 +172,7 @@ def main():
         use_cache = st.checkbox("💾 使用缓存加速（当日内避免重复请求）", value=True)
 
         st.divider()
-        st.caption("数据来源：[AKShare](https://akshare.akfamily.xyz)（免费，无需 API Key）")
+        st.caption("数据来源：[AKShare](https://akshare.akfamily.xyz)（默认新浪财经，免费，无需 API Key）")
         st.caption("开源致谢：[striferxu/stock-picker-plus](https://github.com/striferxu/stock-picker-plus)（GPLv3）")
 
     # -------- 操作按钮 --------

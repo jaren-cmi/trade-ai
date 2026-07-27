@@ -23,7 +23,7 @@ services:
       # 可选：Tavily 情绪分析 API Key（留空则禁用情绪面评分）
       - TAVILY_API_KEY=${TAVILY_API_KEY:-}
     restart: unless-stopped
-    # 容器需要联网访问 AKShare 数据源（东方财富等行情接口）
+    # 容器需要联网访问 AKShare 数据源（默认新浪财经，可回退东方财富）
     # dns:
     #   - 8.8.8.8
     #   - 114.114.114.114

@@ -72,9 +72,14 @@ class MultiFactorStrategy(BaseStrategy):
         roe_col = 'ROE'
         growth_col = '营收增长率'
 
-        # 估值因子（PE倒数，越小越好）；当 PE 列不存在时初始化为 0
+        # 估值因子（PE倒数，越小越好）；缺失PE时用中位数兜底，避免全表失效
         if pe_col in df.columns:
-            df['pe_score'] = 1.0 / df[pe_col].clip(lower=0.1)
+            pe_series = pd.to_numeric(df[pe_col], errors='coerce')
+            valid_pe = pe_series.where(pe_series > 0)
+            # 当全部PE缺失时使用30倍作为中性兜底（A股常见估值中枢量级），避免整表失效
+            pe_fallback = valid_pe.median() if valid_pe.notna().any() else 30.0
+            pe_for_score = pe_series.where(pe_series > 0, pe_fallback).fillna(pe_fallback)
+            df['pe_score'] = 1.0 / pe_for_score.clip(lower=0.1)
         else:
             df['pe_score'] = pd.Series(0.0, index=df.index)
 
@@ -113,7 +118,11 @@ class MultiFactorStrategy(BaseStrategy):
         # 筛选条件
         pe_col = 'PE'
         cond_score = df['总分'] >= self.min_score
-        cond_pe = (df[pe_col] > 0) & (df[pe_col] < self.max_pe) if pe_col in df.columns else True
+        if pe_col in df.columns:
+            pe_series = pd.to_numeric(df[pe_col], errors='coerce')
+            cond_pe = pe_series.isna() | ((pe_series > 0) & (pe_series < self.max_pe))
+        else:
+            cond_pe = True
         cond_no_st = ~df['名称'].str.contains('ST|退市', na=False) if '名称' in df.columns else True
 
         df['signal'] = 0
@@ -153,7 +162,11 @@ class PEStrategy(BaseStrategy):
         roe_col = 'ROE'
         growth_col = '营收增长率'
 
-        cond_pe = (df[pe_col] < self.pe_threshold) & (df[pe_col] > 0) if pe_col in df.columns else True
+        if pe_col in df.columns:
+            pe_series = pd.to_numeric(df[pe_col], errors='coerce')
+            cond_pe = pe_series.isna() | ((pe_series < self.pe_threshold) & (pe_series > 0))
+        else:
+            cond_pe = True
         cond_roe = df[roe_col] > self.roe_threshold if roe_col in df.columns else True
         cond_growth = df[growth_col] > self.revenue_growth if growth_col in df.columns else True
         cond_no_st = ~df['名称'].str.contains('ST|退市', na=False) if '名称' in df.columns else True
@@ -163,13 +176,28 @@ class PEStrategy(BaseStrategy):
 
         # 计算 PE价值得分（PE越低得分越高）
         if pe_col in df.columns and roe_col in df.columns:
-            pe_norm = (1 / df[pe_col].clip(lower=0.1))
-            pe_min, pe_max = pe_norm.quantile(0.05), pe_norm.quantile(0.95)
-            roe_norm = df[roe_col]
-            roe_min, roe_max = roe_norm.quantile(0.05), roe_norm.quantile(0.95)
+            pe_series = pd.to_numeric(df[pe_col], errors='coerce')
+            roe_norm = pd.to_numeric(df[roe_col], errors='coerce')
+            pe_valid = pe_series.where(pe_series > 0)
 
-            pe_score = ((pe_norm - pe_min) / (pe_max - pe_min + 1e-8) * 100).clip(0, 100)
-            roe_score = ((roe_norm - roe_min) / (roe_max - roe_min + 1e-8) * 100).clip(0, 100)
+            if pe_valid.notna().any():
+                pe_fill = pe_valid.median()
+                pe_norm = (1 / pe_series.where(pe_series > 0, pe_fill).fillna(pe_fill).clip(lower=0.1))
+                pe_min, pe_max = pe_norm.quantile(0.05), pe_norm.quantile(0.95)
+                pe_score = ((pe_norm - pe_min) / (pe_max - pe_min + 1e-8) * 100).clip(0, 100)
+            else:
+                # 无PE可用时给中性分，避免错误惩罚缺失数据
+                pe_score = pd.Series(50.0, index=df.index)
+
+            if roe_norm.notna().any():
+                roe_fill = roe_norm.median()
+                roe_norm = roe_norm.fillna(roe_fill)
+                roe_min, roe_max = roe_norm.quantile(0.05), roe_norm.quantile(0.95)
+                roe_score = ((roe_norm - roe_min) / (roe_max - roe_min + 1e-8) * 100).clip(0, 100)
+            else:
+                # 无ROE可用时同样使用中性分
+                roe_score = pd.Series(50.0, index=df.index)
+
             df['总分'] = (pe_score * 0.6 + roe_score * 0.4).round(1)
         else:
             df['总分'] = 60.0
@@ -219,7 +247,11 @@ class ThreeDimensionalStrategy(BaseStrategy):
         df = pd.concat([df.reset_index(drop=True), score_df], axis=1)
 
         cond_score = df['总分'] >= 50  # 三维策略无技术/情绪数据时基准适当放宽
-        cond_pe = (df['PE'] > 0) if 'PE' in df.columns else True
+        if 'PE' in df.columns:
+            pe_series = pd.to_numeric(df['PE'], errors='coerce')
+            cond_pe = pe_series.isna() | (pe_series > 0)
+        else:
+            cond_pe = True
         cond_no_st = ~df['名称'].str.contains('ST|退市', na=False) if '名称' in df.columns else True
 
         df['signal'] = 0
